@@ -1,2 +1,8 @@
-.tests/__pycache__/
-.customer_api/_pycache_/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.env
+.env.*
+*.sqlite3

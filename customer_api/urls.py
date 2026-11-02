@@ -1,47 +1,251 @@
-from django.urls import include, path
-from rest_framework.routers import DefaultRouter
+import json
 
-from core.health import liveness_view, readiness_view
-from core.views import check_delivery_zone
-from core.views.profile import ProfileViewSet
-from core.views.referrals import apply_referral_code, referral_data, referral_list
-from core.views.subscriptions import cancel_subscription, subscribe, subscription_plans, subscription_status
-from core.wallet_views import WalletViewSet
-from customers import urls as customer_urls
-from orders import urls as order_urls
-from payments.views import PaymentViewSet
-from pricing.views import delivery_fee_estimate
-from vendors.marketplace_views import MarketplaceCategoryViewSet, MarketplaceProductViewSet
+from bikadeli_common.gateway import (
+    liveness,
+    proxy_to_driver_service_path,
+    proxy_to_finance_service,
+    proxy_to_identity_service,
+    proxy_to_identity_service_path,
+    proxy_to_monolith,
+    proxy_to_orders_service,
+    proxy_to_pricing_service,
+    proxy_to_vendor_service,
+    readiness,
+)
+from django.conf import settings
+from django.http import JsonResponse
+from django.urls import include, path, re_path
+from django.views.decorators.csrf import csrf_exempt
 
-profile_router = DefaultRouter()
-profile_router.register('profile', ProfileViewSet, basename='customer-profile')
+from customer_accounts.map_tiles import customer_map_tile
 
-payment_router = DefaultRouter()
-payment_router.register('transactions', PaymentViewSet, basename='customer-payments')
 
-wallet_router = DefaultRouter()
-wallet_router.register('wallet', WalletViewSet, basename='customer-wallet')
+@csrf_exempt
+def proxy_wallet_reads(request, *args, **kwargs):
+    if request.method == "GET":
+        return proxy_to_finance_service(request, *args, **kwargs)
+    return proxy_to_monolith(request, *args, **kwargs)
 
-marketplace_router = DefaultRouter()
-marketplace_router.register('marketplace/products', MarketplaceProductViewSet, basename='marketplace-products')
-marketplace_router.register('marketplace/categories', MarketplaceCategoryViewSet, basename='marketplace-categories')
+
+@csrf_exempt
+def proxy_customer_order_cancel(request, *args, **kwargs):
+    if settings.ORDERS_CUSTOMER_CANCEL_ENABLED:
+        return proxy_to_orders_service(request, *args, **kwargs)
+    return proxy_to_monolith(request, *args, **kwargs)
+
+
+@csrf_exempt
+def proxy_customer_wallet_transfer(request, *args, **kwargs):
+    if settings.FINANCE_WALLET_TRANSFER_ENABLED:
+        return proxy_to_finance_service(request, *args, **kwargs)
+    return proxy_to_monolith(request, *args, **kwargs)
+
+
+@csrf_exempt
+def proxy_customer_payment_intent(request, *args, **kwargs):
+    if settings.FINANCE_PAYMENT_INTENTS_ENABLED:
+        return proxy_to_finance_service(request, *args, **kwargs)
+    return proxy_to_monolith(request, *args, **kwargs)
+
+
+@csrf_exempt
+def proxy_customer_wallet_topup(request, *args, **kwargs):
+    if (
+        request.method == "POST"
+        and request.content_type == "application/json"
+    ):
+        try:
+            payload = json.loads(request.body)
+            gateway = payload.get("gateway") if isinstance(payload, dict) else None
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            gateway = None
+        if gateway == "stripe" and settings.FINANCE_WALLET_TOPUP_ENABLED:
+            return proxy_to_finance_service(request, *args, **kwargs)
+        if (
+            gateway in {"ecocash", "paynow"}
+            and settings.FINANCE_PAYNOW_WALLET_TOPUP_ENABLED
+        ):
+            return proxy_to_finance_service(request, *args, **kwargs)
+    return proxy_to_monolith(request, *args, **kwargs)
+
+
+@csrf_exempt
+def proxy_customer_wallet_payment(request, *args, **kwargs):
+    if request.method == "POST" and settings.FINANCE_WALLET_PAYMENT_ENABLED:
+        return proxy_to_finance_service(request, *args, **kwargs)
+    return proxy_to_monolith(request, *args, **kwargs)
+
+
+@csrf_exempt
+def proxy_customer_prime(request, *args, **kwargs):
+    path_info = request.path_info.rstrip("/")
+    if path_info.endswith("/paynow/callback") or "/payment-status/" in path_info:
+        return proxy_to_finance_service(request, *args, **kwargs)
+    if path_info.endswith("/payment") and not settings.FINANCE_PRIME_ENABLED:
+        return JsonResponse(
+            {"detail": "Prime payment initiation is not enabled."},
+            status=503,
+        )
+    if settings.FINANCE_PRIME_ENABLED:
+        return proxy_to_finance_service(request, *args, **kwargs)
+    return proxy_to_monolith(request, *args, **kwargs)
+
+
+@csrf_exempt
+def proxy_driver_fcm_token(request, *args, **kwargs):
+    if settings.IDENTITY_DRIVER_FCM_TOKEN_ENABLED:
+        return proxy_to_identity_service_path(
+            request,
+            "/api/v1/drivers/profile/update_fcm_token/",
+        )
+    return proxy_to_monolith(request, *args, **kwargs)
+
+
+@csrf_exempt
+def proxy_driver_login(request, *args, **kwargs):
+    if settings.IDENTITY_DRIVER_LOGIN_ENABLED:
+        return proxy_to_identity_service_path(request, "/api/v1/auth/login/")
+    return proxy_to_monolith(request, *args, **kwargs)
+
+
+@csrf_exempt
+def proxy_driver_registration(request, *args, **kwargs):
+    if settings.DRIVER_REGISTRATION_SERVICE_ENABLED:
+        return proxy_to_driver_service_path(
+            request,
+            "/api/v1/drivers/auth/register/",
+        )
+    return proxy_to_monolith(request, *args, **kwargs)
+
 
 urlpatterns = [
-    path('health/', liveness_view, name='health-liveness'),
-    path('health/ready/', readiness_view, name='health-readiness'),
-    path('api/v1/customers/', include(customer_urls.urlpatterns)),
-    path('api/v1/orders/', include(order_urls.urlpatterns)),
-    path('api/v1/payments/', include(payment_router.urls)),
-    path('api/v1/', include(wallet_router.urls)),
-    path('api/v1/', include(marketplace_router.urls)),
-    path('api/v1/', include(profile_router.urls)),
-    path('api/v1/delivery-zones/check/', check_delivery_zone, name='customer-delivery-zone-check'),
-    path('api/v1/pricing/estimate/', delivery_fee_estimate, name='customer-delivery-fee-estimate'),
-    path('api/v1/auth/referral/', referral_data, name='customer-referral-data'),
-    path('api/v1/auth/referral/list/', referral_list, name='customer-referral-list'),
-    path('api/v1/auth/referral/apply/', apply_referral_code, name='customer-referral-apply'),
-    path('api/v1/subscription/plans/', subscription_plans, name='customer-subscription-plans'),
-    path('api/v1/subscription/status/', subscription_status, name='customer-subscription-status'),
-    path('api/v1/subscription/subscribe/', subscribe, name='customer-subscription-subscribe'),
-    path('api/v1/subscription/cancel/', cancel_subscription, name='customer-subscription-cancel'),
+    re_path(
+        r"^api/v1/subscription/(?:plans|status|subscribe|cancel|payment|payment-status/[^/]+|paynow/callback)/?$",
+        proxy_customer_prime,
+        name="finance-service-prime",
+    ),
+    path("health/", liveness, name="health-liveness"),
+    path("health/ready/", readiness, name="health-readiness"),
+    path("", include("customer_accounts.urls")),
+    path(
+        "api/v1/customers/map/tiles/<int:z>/<int:x>/<int:y>/",
+        customer_map_tile,
+        name="customer-map-tiles",
+    ),
+    re_path(
+        r"^api/v1/(?:auth/(?:register|login|logout|logout-all|token/refresh)|customers/(?:register|login|verify-email|resend-verification)|user/(?:request-deletion|cancel-deletion))/?$",
+        proxy_to_identity_service,
+        name="identity-service-auth",
+    ),
+    re_path(
+        r"^api/v1/profile(?:/.*)?$",
+        proxy_to_identity_service,
+        name="identity-service-profile",
+    ),
+    re_path(
+        r"^(?:api/v1/)?drivers/profile/update_fcm_token/?$",
+        proxy_driver_fcm_token,
+        name="identity-service-driver-fcm-token",
+    ),
+    path("auth/login/", proxy_driver_login, name="identity-service-driver-login"),
+    path(
+        "drivers/auth/register/",
+        proxy_driver_registration,
+        name="driver-service-registration",
+    ),
+    re_path(
+        r"^api/v1/pricing/estimate/$",
+        proxy_to_pricing_service,
+        name="pricing-service-estimate",
+    ),
+    re_path(
+        r"^api/v1/orders/parcels/(?:pricing|sizes/pricing)/$",
+        proxy_to_pricing_service,
+        name="pricing-service-parcel-pricing",
+    ),
+    re_path(
+        r"^api/v1/orders/parcels(?:/.*)?$",
+        proxy_to_orders_service,
+        name="orders-service-parcel-proxy",
+    ),
+    re_path(
+        r"^api/v1/orders/[0-9]+/cancel/$",
+        proxy_customer_order_cancel,
+        name="orders-service-customer-cancel",
+    ),
+    re_path(
+        r"^api/v1/orders(?:/(?:cart(?:/.*)?|checkout|[0-9]+))?/?$",
+        proxy_to_orders_service,
+        name="orders-service-food-proxy",
+    ),
+    re_path(
+        r"^api/v1/marketplace/(?:products|categories)(?:/.*)?$",
+        proxy_to_vendor_service,
+        name="vendor-service-marketplace-proxy",
+    ),
+    re_path(
+        r"^api/v1/wallet/(?:balance|transactions)/?$",
+        proxy_wallet_reads,
+        name="finance-service-wallet-read",
+    ),
+    re_path(
+        r"^api/v1/wallet/transfer/?$",
+        proxy_customer_wallet_transfer,
+        name="finance-service-wallet-transfer",
+    ),
+    re_path(
+        r"^api/v1/wallet/top-up/?$",
+        proxy_customer_wallet_topup,
+        name="finance-service-wallet-topup",
+    ),
+    re_path(
+        r"^api/v1/wallet/pay/?$",
+        proxy_customer_wallet_payment,
+        name="finance-service-wallet-payment",
+    ),
+    re_path(
+        r"^api/v1/wallet/recipient/(?P<user_id>[0-9]+)/?$",
+        proxy_customer_wallet_transfer,
+        name="finance-service-wallet-recipient",
+    ),
+    re_path(
+        r"^api/v1/payments/transactions/create-payment-intent/$",
+        proxy_customer_payment_intent,
+        name="finance-service-payment-intent",
+    ),
+    re_path(
+        r"^api/v1/payments/transactions/(?P<order_id>[0-9]+)/confirm-stripe-payment/$",
+        proxy_customer_payment_intent,
+        name="finance-service-payment-confirm",
+    ),
+    re_path(
+        r"^api/v1/vendors/public/vendors(?:/.*)?$",
+        proxy_to_vendor_service,
+        name="vendor-service-public-vendors-proxy",
+    ),
+    re_path(
+        r"^api/v1/vendors/public/menu-items(?:/.*)?$",
+        proxy_to_vendor_service,
+        name="vendor-service-public-menu-proxy",
+    ),
+    re_path(
+        r"^api/v1/vendors/(?:menu-images/[0-9]+/file|product-images/[0-9]+/file)/$",
+        proxy_to_vendor_service,
+        name="vendor-service-image-proxy",
+    ),
+    re_path(
+        r"^api/v1/vendors/menu(?:/.*)?$",
+        proxy_to_vendor_service,
+        name="vendor-service-menu-management-proxy",
+    ),
+    re_path(
+        r"^api/v1/delivery-zones/check/$",
+        proxy_to_pricing_service,
+        name="pricing-service-delivery-zone-check",
+    ),
+    re_path(
+        r"^api/v1/(?:customers(?!/addresses(?:/|$)|/support-tickets(?:/|$)|/vendor-favourites(?:/|$)|/favourites(?:/|$)|/map/tiles(?:/|$)|/(?:register|login)(?:/|$))|orders(?!/parcels(?:/|$))|payments/transactions|wallet|auth/referral(?:/list|/apply)?|subscription/(?:plans|status|subscribe|cancel|payment|payment-status|paynow/callback))(?:/.*)?$",
+        proxy_to_monolith,
+        name="customer-api-proxy",
+    ),
 ]
