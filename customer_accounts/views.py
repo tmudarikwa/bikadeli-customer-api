@@ -36,6 +36,40 @@ from .serializers import (
 logger = logging.getLogger(__name__)
 
 
+@api_view(['GET', 'PATCH'])
+@permission_classes([permissions.IsAuthenticated])
+def profile_me_view(request):
+    customer, _ = CustomerAccount.objects.get_or_create(owner_user_id=request.user.id)
+
+    if request.method == 'PATCH':
+        allowed_fields = {'first_name', 'last_name', 'phone_number'}
+        updates = []
+        for field in allowed_fields:
+            if field in request.data:
+                setattr(request.user, field, request.data[field])
+                updates.append(field)
+        if updates:
+            request.user.save(update_fields=updates)
+
+    return Response(
+        {
+            'id': request.user.id,
+            'email': request.user.email,
+            'first_name': request.user.first_name,
+            'last_name': request.user.last_name,
+            'phone_number': getattr(request.user, 'phone_number', ''),
+            'user_type': getattr(request.user, 'user_type', 'CUSTOMER'),
+            'profile': {
+                'id': customer.id,
+                'owner_user_id': customer.owner_user_id,
+                'loyalty_points': customer.loyalty_points,
+                'created_at': customer.created_at.isoformat() if customer.created_at else None,
+                'updated_at': customer.updated_at.isoformat() if customer.updated_at else None,
+            },
+        }
+    )
+
+
 class CustomerMutationRateThrottle(UserRateThrottle):
     scope = 'mutation'
 

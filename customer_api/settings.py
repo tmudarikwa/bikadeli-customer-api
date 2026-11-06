@@ -4,12 +4,20 @@ from urllib.parse import urlsplit
 from bikadeli_common.settings import (
     configure_database,
     configure_gateway_settings,
+    configure_service_oauth,
     configure_token_verification,
     configure_upstream_url,
 )
 
 configure_gateway_settings(globals(), "customer-api")
 configure_database(globals(), "customer-api")
+configure_service_oauth(
+    globals(),
+    service_name='customer-api',
+    owner_domain='customers',
+    features=['customer_identity', 'customer_profile', 'wallet', 'wallet_topups', 'wallet_transfers', 'payment_intents', 'addresses', 'favourites', 'support_tickets'],
+    downstream_services=['identity-service', 'orders-service', 'vendor-api', 'pricing-service', 'finance-service'],
+)
 configure_token_verification(globals())
 configure_upstream_url(globals(), "PRICING_SERVICE_URL", "PRICING_SERVICE_URL")
 configure_upstream_url(globals(), "ORDERS_SERVICE_URL", "ORDERS_SERVICE_URL")

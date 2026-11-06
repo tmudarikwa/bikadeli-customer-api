@@ -11,6 +11,7 @@ from .loyalty import (
 app_name = 'customer_accounts'
 
 urlpatterns = [
+    path('api/v1/profile/me/', views.profile_me_view, name='customer-profile-me'),
     path('api/v1/customers/loyalty/', LoyaltyBalanceView.as_view(), name='loyalty-balance-legacy'),
     path('api/v1/customers/loyalty/balance/', LoyaltyBalanceView.as_view(), name='loyalty-balance'),
     path(

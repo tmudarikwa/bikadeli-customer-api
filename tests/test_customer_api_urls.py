@@ -95,7 +95,7 @@ class CustomerApiUrlTests(TestCase):
         )
         self.assertEqual(
             resolve("/api/v1/profile/me/", urlconf=self.urlconf).url_name,
-            "identity-service-profile",
+            "customer-profile-me",
         )
         self.assertEqual(
             resolve(

@@ -11,6 +11,7 @@ from bikadeli_common.gateway import (
     proxy_to_pricing_service,
     proxy_to_vendor_service,
     readiness,
+    service_metadata_view,
 )
 from django.conf import settings
 from django.http import JsonResponse
@@ -119,6 +120,7 @@ def proxy_driver_registration(request, *args, **kwargs):
 
 
 urlpatterns = [
+    path('internal/service-metadata/', service_metadata_view, name='customer-service-metadata'),
     re_path(
         r"^api/v1/subscription/(?:plans|status|subscribe|cancel|payment|payment-status/[^/]+|paynow/callback)/?$",
         proxy_customer_prime,
